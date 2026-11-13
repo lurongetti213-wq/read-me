@@ -13,6 +13,8 @@ NEURAL CURRENT — Gradient Halftone Generator v3
 Cancel elimina la preview y deja el original como estaba.
 
 Novedades v3:
+- Funciona con DEGRADADO LIBRE (Freeform): por defecto toma los colores tal
+  como Illustrator los dibuja, así que respeta todos los puntos de color.
 - Rangos mucho más amplios. Cada control tiene un campo numérico donde puedes
   escribir valores más allá del rango del slider.
 - "Escala global" para agrandar/achicar todos los puntos a la vez (10%–400%+).
@@ -54,11 +56,9 @@ Novedades v3:
         return null;
     }
 
+    // May be null for fills the scripting API does not expose well (e.g. Freeform gradients).
+    // That is fine: by default the script samples the rendered colors (see buildRaster).
     var gradientColor = getGradient(source);
-    if (!gradientColor) {
-        alert("No se detectó un degradado. Aplica un degradado de Illustrator directamente al relleno del objeto.");
-        return;
-    }
 
     function rgbOf(c) {
         try {
@@ -139,10 +139,133 @@ Novedades v3:
         }
     } catch (e) {}
 
-    // mapping: 0 Auto, 1 Horizontal, 2 Vertical, 3 Radial from center
+    // ------------------------------------------------------------------
+    // Raster sampling: reads the colors exactly as Illustrator renders them.
+    // Works with linear, radial, FREEFORM gradients, opacity, etc.
+    // The object is duplicated into a temp document, exported as an
+    // uncompressed TIFF and the pixels are read back.
+    // ------------------------------------------------------------------
+    var raster = null, rasterError = "";
+
+    function stripStroke(item) {
+        try {
+            if (item.typename === "PathItem") item.stroked = false;
+            else if (item.typename === "CompoundPathItem") {
+                for (var i = 0; i < item.pathItems.length; i++) item.pathItems[i].stroked = false;
+            }
+        } catch (e) {}
+    }
+
+    function readBinary(f) {
+        f.encoding = "BINARY";
+        if (!f.open("r")) return null;
+        var data = f.read();
+        f.close();
+        return data;
+    }
+
+    function parseTiff(s) {
+        if (!s || s.length < 8) throw new Error("TIFF vacío");
+        var le = s.charAt(0) === "I";
+        function u8(o) { return s.charCodeAt(o) & 255; }
+        function u16(o) { return le ? (u8(o) | (u8(o + 1) << 8)) : ((u8(o) << 8) | u8(o + 1)); }
+        function u32(o) {
+            return le ? (u8(o) + u8(o + 1) * 256 + u8(o + 2) * 65536 + u8(o + 3) * 16777216)
+                      : (u8(o) * 16777216 + u8(o + 1) * 65536 + u8(o + 2) * 256 + u8(o + 3));
+        }
+        var ifd = u32(4), n = u16(ifd), tags = {};
+        for (var i = 0; i < n; i++) {
+            var e = ifd + 2 + i * 12;
+            var tag = u16(e), type = u16(e + 2), cnt = u32(e + 4);
+            var size = type === 3 ? 2 : (type === 4 ? 4 : 1);
+            var base = (size * cnt <= 4) ? e + 8 : u32(e + 8);
+            var vals = [];
+            for (var j = 0; j < cnt && j < 100000; j++) {
+                vals.push(type === 3 ? u16(base + j * 2) : (type === 4 ? u32(base + j * 4) : u8(base + j)));
+            }
+            tags[tag] = vals;
+        }
+        if (tags[259] && tags[259][0] !== 1) throw new Error("TIFF comprimido");
+        if (tags[258] && tags[258][0] !== 8) throw new Error("TIFF no es de 8 bits");
+        if (tags[284] && tags[284][0] !== 1) throw new Error("TIFF planar no soportado");
+        var w = tags[256][0], h = tags[257][0];
+        return {
+            w: w, h: h,
+            spp: tags[277] ? tags[277][0] : 1,
+            rps: tags[278] ? tags[278][0] : h,
+            offsets: tags[273],
+            u8: u8
+        };
+    }
+
+    function buildRaster() {
+        var tmpDoc = null, base = "nc_halftone_" + new Date().getTime();
+        try {
+            tmpDoc = app.documents.add(DocumentColorSpace.RGB, 1000, 1000);
+            var dup = source.duplicate(tmpDoc.layers[0], ElementPlacement.PLACEATEND);
+            try { dup.hidden = false; } catch (e) {}
+            stripStroke(dup);
+            var k = 360 / Math.max(width, height) * 100; // ~360 px on the long side
+            dup.resize(k, k, true, true, true, true, true, Transformation.CENTER);
+            var ab = tmpDoc.artboards[0].artboardRect;
+            dup.position = [ab[0], ab[1]];
+            tmpDoc.artboards[0].artboardRect = dup.geometricBounds;
+
+            var opt = new ExportOptionsTIFF();
+            opt.resolution = 72;
+            opt.imageColorSpace = ImageColorSpace.RGB;
+            opt.lZWCompression = false;
+            try { opt.antiAliasing = AntiAliasingMethod.ARTOPTIMIZED; } catch (e) {}
+            try { opt.byteOrder = TIFFByteOrder.IBMPC; } catch (e) {}
+            try { opt.embedICCProfile = false; } catch (e) {}
+            try { opt.saveMultipleArtboards = true; opt.artboardRange = "1"; } catch (e) {}
+            tmpDoc.exportFile(new File(Folder.temp + "/" + base + ".tif"), ExportType.TIFF, opt);
+        } catch (e) {
+            rasterError = String(e);
+        }
+        try { if (tmpDoc) tmpDoc.close(SaveOptions.DONOTSAVECHANGES); } catch (e) {}
+        try { doc.activate(); } catch (e) {}
+
+        // Illustrator may append an artboard suffix to the file name.
+        var files = Folder.temp.getFiles(base + "*");
+        if (!files || !files.length) {
+            if (!rasterError) rasterError = "no se generó el archivo temporal";
+            return;
+        }
+        try {
+            raster = parseTiff(readBinary(files[0]));
+        } catch (e2) {
+            raster = null;
+            rasterError = String(e2);
+        }
+        for (var i = 0; i < files.length; i++) { try { files[i].remove(); } catch (e3) {} }
+    }
+
+    function rasterColor(x, y) {
+        var px = Math.floor((x - left) / width * raster.w);
+        var py = Math.floor((top - y) / height * raster.h);
+        if (px < 0) px = 0; else if (px >= raster.w) px = raster.w - 1;
+        if (py < 0) py = 0; else if (py >= raster.h) py = raster.h - 1;
+        var strip = Math.floor(py / raster.rps);
+        var o = raster.offsets[strip] + ((py - strip * raster.rps) * raster.w + px) * raster.spp;
+        if (raster.spp >= 3) return [raster.u8(o), raster.u8(o + 1), raster.u8(o + 2)];
+        var g = raster.u8(o);
+        return [g, g, g];
+    }
+
+    buildRaster();
+    try { doc.selection = null; source.selected = true; } catch (e) {}
+
+    if (!raster && !gradientColor) {
+        alert("No se pudo leer el degradado de este objeto.\n" + rasterError);
+        return;
+    }
+
+    // mapping: 0 Raster (what you see), 1 Auto geometry, 2 Horizontal, 3 Vertical, 4 Radial from center
     function gradientT(x, y, mapping, reverse) {
         var u = (x - left) / width, v = (top - y) / height, t;
-        if (mapping === 0 && gInfo.ok) {
+        mapping = mapping - 1;
+        if (mapping <= 0 && gInfo.ok) {
             if (isRadial) {
                 var dx = x - gInfo.ox, dy = y - gInfo.oy;
                 t = Math.sqrt(dx * dx + dy * dy) / gInfo.len;
@@ -151,7 +274,7 @@ Novedades v3:
             }
         } else if (mapping === 2) {
             t = v;
-        } else if (mapping === 3 || (mapping === 0 && isRadial)) {
+        } else if (mapping === 3 || (mapping <= 0 && isRadial)) {
             t = Math.sqrt(Math.pow((u - 0.5) * 2, 2) + Math.pow((v - 0.5) * 2, 2)) / 1.4142;
         } else {
             t = u;
@@ -309,8 +432,16 @@ Novedades v3:
                 if (x < left || x > right || y < bottom || y > top) continue;
                 if (!isInsideShape(x, y)) continue;
 
-                var t = gradientT(x, y, s.mapping, s.reverse);
-                var col = sample(t);
+                var t, col;
+                if (s.mapping === 0 && raster) {
+                    // Sampled pixel color. "Position" = darkness, so the start/end size modes still work.
+                    col = rasterColor(x, y);
+                    t = 1 - (0.2126 * col[0] + 0.7152 * col[1] + 0.0722 * col[2]) / 255;
+                    if (s.reverse) t = 1 - t;
+                } else {
+                    t = gradientT(x, y, s.mapping, s.reverse);
+                    col = sample(t);
+                }
 
                 var lum = (0.2126 * col[0] + 0.7152 * col[1] + 0.0722 * col[2]) / 255;
                 var field;
@@ -512,15 +643,16 @@ Novedades v3:
     var pShape = makePanel(colR, "Silueta y degradado");
     var cFade = numControl(pShape, "fade", "Fade hacia el borde", 0, 100, 45, 0, 100, 0, "%");
     var cClip = checkControl(pShape, "clip", "Achicar puntos del borde para que quepan", true);
-    var cMapping = dropControl(pShape, "mapping", "Mapeo del degradado", [
-        "Auto (geometría de Illustrator)",
+    var cMapping = dropControl(pShape, "mapping2", "Mapeo del degradado", [
+        "Colores tal como se ven (sirve para degradado libre)",
+        "Geometría del degradado (lineal/radial)",
         "Horizontal (izq → der)",
         "Vertical (arriba → abajo)",
         "Radial desde el centro"
     ], 0);
     var cReverse = checkControl(pShape, "reverse", "Invertir degradado", false);
-    if (!gInfo.ok) {
-        var note = pShape.add("statictext", undefined, "(Auto usa el rectángulo delimitador: no se pudo leer la geometría.)");
+    if (!raster) {
+        var note = pShape.add("statictext", undefined, "(No se pudieron leer los colores renderizados: se usará la geometría.)");
         note.preferredSize.width = 300;
     }
 
@@ -563,7 +695,7 @@ Novedades v3:
             hex: cHex.get(),
             fade: cFade.get() / 100,
             clip: cClip.get(),
-            mapping: cMapping.get(),
+            mapping: (cMapping.get() === 0 && !raster) ? 1 : cMapping.get(),
             reverse: cReverse.get(),
             colorMode: cColorMode.get(),
             halos: cHalos.get()
