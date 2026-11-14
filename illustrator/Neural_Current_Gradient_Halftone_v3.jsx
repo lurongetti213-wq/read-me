@@ -2,7 +2,8 @@
 /*
 NEURAL CURRENT — Gradient Halftone Generator v3
 ------------------------------------------------
-1) Selecciona UN path o compound path con relleno degradado.
+1) Selecciona el objeto con degradado: path, compound path, grupo, texto
+   vivo o texto convertido a contornos (puedes seleccionar varias piezas).
 2) Ejecuta este script.
 3) "Preview" crea una vista previa temporal. El degradado original se OCULTA
    mientras previsualizas para que veas solo los puntos.
@@ -13,6 +14,8 @@ NEURAL CURRENT — Gradient Halftone Generator v3
 Cancel elimina la preview y deja el original como estaba.
 
 Novedades v3:
+- Funciona con TIPOGRAFÍA: texto vivo, texto convertido a contornos y grupos.
+  Los huecos de las letras (o, a, e...) quedan vacíos.
 - Funciona con DEGRADADO LIBRE (Freeform): por defecto toma los colores tal
   como Illustrator los dibuja, así que respeta todos los puntos de color.
 - Rangos mucho más amplios. Cada control tiene un campo numérico donde puedes
@@ -33,15 +36,34 @@ Novedades v3:
     }
 
     var doc = app.activeDocument;
-    if (!doc.selection || doc.selection.length !== 1) {
-        alert("Selecciona exactamente UN path o compound path con degradado.");
+    var sel = doc.selection;
+    if (!sel || !sel.length || sel.typename === "TextRange") {
+        alert("Selecciona uno o más objetos: path, compound path, grupo,\ntexto o texto convertido a contornos.");
         return;
     }
 
-    var source = doc.selection[0];
-    if (source.typename !== "PathItem" && source.typename !== "CompoundPathItem") {
-        alert("Selecciona un Path o Compound Path con relleno degradado.");
-        return;
+    // sources  = what the user selected (hidden while previewing, sampled for color)
+    // geoItems = vector geometry used for the silhouette (live text -> temporary outlines)
+    var sources = [], geoItems = [], tempOutlines = [];
+    for (var sIdx = 0; sIdx < sel.length; sIdx++) sources.push(sel[sIdx]);
+
+    function cleanupTemp() {
+        for (var i = 0; i < tempOutlines.length; i++) { try { tempOutlines[i].remove(); } catch (e) {} }
+        tempOutlines = [];
+    }
+
+    for (var gIdx = 0; gIdx < sources.length; gIdx++) {
+        var it = sources[gIdx];
+        if (it.typename === "TextFrame") {
+            try {
+                var outl = it.duplicate().createOutline();
+                outl.hidden = true;
+                tempOutlines.push(outl);
+                geoItems.push(outl);
+            } catch (eTxt) {}
+        } else {
+            geoItems.push(it);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -52,13 +74,20 @@ Novedades v3:
             if (item.typename === "PathItem" && item.filled && item.fillColor.typename === "GradientColor") return item.fillColor;
             if (item.typename === "CompoundPathItem" && item.pathItems.length && item.pathItems[0].filled &&
                 item.pathItems[0].fillColor.typename === "GradientColor") return item.pathItems[0].fillColor;
+            if (item.typename === "GroupItem") {
+                for (var i = 0; i < item.pageItems.length; i++) {
+                    var g = getGradient(item.pageItems[i]);
+                    if (g) return g;
+                }
+            }
         } catch (e) {}
         return null;
     }
 
     // May be null for fills the scripting API does not expose well (e.g. Freeform gradients).
     // That is fine: by default the script samples the rendered colors (see buildRaster).
-    var gradientColor = getGradient(source);
+    var gradientColor = null;
+    for (var gcI = 0; gcI < geoItems.length && !gradientColor; gcI++) gradientColor = getGradient(geoItems[gcI]);
 
     function rgbOf(c) {
         try {
@@ -115,10 +144,22 @@ Novedades v3:
         return stops[stops.length - 1].color;
     }
 
-    var gb = source.geometricBounds; // left, top, right, bottom
+    if (!geoItems.length) {
+        alert("No hay objetos vectoriales utilizables en la selección.");
+        return;
+    }
+    var gb = geoItems[0].geometricBounds; // left, top, right, bottom
     var left = gb[0], top = gb[1], right = gb[2], bottom = gb[3];
+    for (var bI = 1; bI < geoItems.length; bI++) {
+        var bb = geoItems[bI].geometricBounds;
+        if (bb[0] < left) left = bb[0];
+        if (bb[1] > top) top = bb[1];
+        if (bb[2] > right) right = bb[2];
+        if (bb[3] < bottom) bottom = bb[3];
+    }
     var width = right - left, height = top - bottom;
     if (width <= 0 || height <= 0) {
+        cleanupTemp();
         alert("El objeto seleccionado no tiene área utilizable.");
         return;
     }
@@ -152,6 +193,8 @@ Novedades v3:
             if (item.typename === "PathItem") item.stroked = false;
             else if (item.typename === "CompoundPathItem") {
                 for (var i = 0; i < item.pathItems.length; i++) item.pathItems[i].stroked = false;
+            } else if (item.typename === "GroupItem") {
+                for (var j = 0; j < item.pageItems.length; j++) stripStroke(item.pageItems[j]);
             }
         } catch (e) {}
     }
@@ -202,9 +245,14 @@ Novedades v3:
         var tmpDoc = null, base = "nc_halftone_" + new Date().getTime();
         try {
             tmpDoc = app.documents.add(DocumentColorSpace.RGB, 1000, 1000);
-            var dup = source.duplicate(tmpDoc.layers[0], ElementPlacement.PLACEATEND);
-            try { dup.hidden = false; } catch (e) {}
-            stripStroke(dup);
+            var dup = tmpDoc.layers[0].groupItems.add();
+            for (var si2 = 0; si2 < sources.length; si2++) {
+                var d1 = sources[si2].duplicate(dup, ElementPlacement.PLACEATEND);
+                try { d1.hidden = false; } catch (e) {}
+                // Outline text so its bounds match the glyph geometry used for the dots.
+                if (d1.typename === "TextFrame") { try { d1 = d1.createOutline(); } catch (e) {} }
+                stripStroke(d1);
+            }
             var k = 360 / Math.max(width, height) * 100; // ~360 px on the long side
             dup.resize(k, k, true, true, true, true, true, Transformation.CENTER);
             var ab = tmpDoc.artboards[0].artboardRect;
@@ -254,9 +302,13 @@ Novedades v3:
     }
 
     buildRaster();
-    try { doc.selection = null; source.selected = true; } catch (e) {}
+    try {
+        doc.selection = null;
+        for (var rsI = 0; rsI < sources.length; rsI++) sources[rsI].selected = true;
+    } catch (e) {}
 
     if (!raster && !gradientColor) {
+        cleanupTemp();
         alert("No se pudo leer el degradado de este objeto.\n" + rasterError);
         return;
     }
@@ -286,7 +338,8 @@ Novedades v3:
     // ------------------------------------------------------------------
     // Shape geometry
     // ------------------------------------------------------------------
-    function sampledPolygon(pathItem, stepsPerSegment) {
+    // Adaptive sampling: straight segments = 1 point, curves = more points by length.
+    function sampledPolygon(pathItem) {
         var pts = pathItem.pathPoints;
         var poly = [];
         if (!pts || pts.length < 2 || !pathItem.closed) return poly;
@@ -294,8 +347,16 @@ Novedades v3:
             var a = pts[i];
             var b = pts[(i + 1) % pts.length];
             var p0 = a.anchor, p1 = a.rightDirection, p2 = b.leftDirection, p3 = b.anchor;
-            for (var s = 0; s < stepsPerSegment; s++) {
-                var t = s / stepsPerSegment, mt = 1 - t;
+            var straight = p1[0] === p0[0] && p1[1] === p0[1] && p2[0] === p3[0] && p2[1] === p3[1];
+            var steps = 1;
+            if (!straight) {
+                var len = Math.sqrt(Math.pow(p1[0] - p0[0], 2) + Math.pow(p1[1] - p0[1], 2)) +
+                          Math.sqrt(Math.pow(p2[0] - p1[0], 2) + Math.pow(p2[1] - p1[1], 2)) +
+                          Math.sqrt(Math.pow(p3[0] - p2[0], 2) + Math.pow(p3[1] - p2[1], 2));
+                steps = Math.max(3, Math.min(16, Math.ceil(len / 3)));
+            }
+            for (var s = 0; s < steps; s++) {
+                var t = s / steps, mt = 1 - t;
                 poly.push([
                     mt * mt * mt * p0[0] + 3 * mt * mt * t * p1[0] + 3 * mt * t * t * p2[0] + t * t * t * p3[0],
                     mt * mt * mt * p0[1] + 3 * mt * mt * t * p1[1] + 3 * mt * t * t * p2[1] + t * t * t * p3[1]
@@ -305,28 +366,63 @@ Novedades v3:
         return poly;
     }
 
-    function getPolygons(item) {
-        var result = [];
-        if (item.typename === "PathItem") {
-            var p = sampledPolygon(item, 12);
-            if (p.length) result.push(p);
-        } else {
-            for (var k = 0; k < item.pathItems.length; k++) {
-                var cp = sampledPolygon(item.pathItems[k], 12);
-                if (cp.length) result.push(cp);
-            }
+    function makePoly(pts) {
+        var x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+        for (var i = 0; i < pts.length; i++) {
+            if (pts[i][0] < x0) x0 = pts[i][0];
+            if (pts[i][0] > x1) x1 = pts[i][0];
+            if (pts[i][1] < y0) y0 = pts[i][1];
+            if (pts[i][1] > y1) y1 = pts[i][1];
         }
-        return result;
+        return { pts: pts, x0: x0, y0: y0, x1: x1, y1: y1 };
     }
 
-    var shapePolygons = getPolygons(source);
-    if (!shapePolygons.length) {
-        alert("El objeto seleccionado debe ser un path cerrado o compound path.");
+    // A "shape" = one filled object (a path, or a compound path with its holes).
+    // Letters outlined from text are compound paths, so counters (o, a, e...) stay empty.
+    var shapes = [], allPolys = [];
+    function addShape(polyList) {
+        if (!polyList.length) return;
+        var sh = { polys: polyList, x0: 1e18, y0: 1e18, x1: -1e18, y1: -1e18 };
+        for (var i = 0; i < polyList.length; i++) {
+            var p = polyList[i];
+            if (p.x0 < sh.x0) sh.x0 = p.x0;
+            if (p.y0 < sh.y0) sh.y0 = p.y0;
+            if (p.x1 > sh.x1) sh.x1 = p.x1;
+            if (p.y1 > sh.y1) sh.y1 = p.y1;
+            allPolys.push(p);
+        }
+        shapes.push(sh);
+    }
+
+    function collectShapes(item) {
+        try {
+            if (item.typename === "PathItem") {
+                if (item.guides || item.clipping) return;
+                var pp = sampledPolygon(item);
+                if (pp.length > 2) addShape([makePoly(pp)]);
+            } else if (item.typename === "CompoundPathItem") {
+                var list = [];
+                for (var k = 0; k < item.pathItems.length; k++) {
+                    var cp = sampledPolygon(item.pathItems[k]);
+                    if (cp.length > 2) list.push(makePoly(cp));
+                }
+                addShape(list);
+            } else if (item.typename === "GroupItem") {
+                for (var g = 0; g < item.pageItems.length; g++) collectShapes(item.pageItems[g]);
+            }
+        } catch (e) {}
+    }
+    for (var csI = 0; csI < geoItems.length; csI++) collectShapes(geoItems[csI]);
+
+    if (!shapes.length) {
+        cleanupTemp();
+        alert("La selección necesita trazados cerrados (paths, compound paths, grupos o texto).");
         return;
     }
 
-    function pointInPolygon(px, py, poly) {
-        var inside = false;
+    function pointInPolygon(px, py, p) {
+        if (px < p.x0 || px > p.x1 || py < p.y0 || py > p.y1) return false;
+        var poly = p.pts, inside = false;
         for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
             var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
             if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 0.0000001) + xi)) inside = !inside;
@@ -334,20 +430,29 @@ Novedades v3:
         return inside;
     }
 
-    // Even-odd rule: handles compound paths with holes.
+    // Even-odd inside each shape (holes), union across shapes (overlapping letters stay filled).
     function isInsideShape(px, py) {
-        var inside = false;
-        for (var pi = 0; pi < shapePolygons.length; pi++) {
-            if (pointInPolygon(px, py, shapePolygons[pi])) inside = !inside;
+        for (var si = 0; si < shapes.length; si++) {
+            var sh = shapes[si];
+            if (px < sh.x0 || px > sh.x1 || py < sh.y0 || py > sh.y1) continue;
+            var inside = false;
+            for (var pi = 0; pi < sh.polys.length; pi++) {
+                if (pointInPolygon(px, py, sh.polys[pi])) inside = !inside;
+            }
+            if (inside) return true;
         }
-        return inside;
+        return false;
     }
 
-    // Distance from a point to the nearest silhouette edge (all sub-paths).
+    // Distance from a point to the nearest edge of any path (polygons far away are skipped).
     function edgeDistance(px, py) {
         var best = 1e18;
-        for (var pi = 0; pi < shapePolygons.length; pi++) {
-            var poly = shapePolygons[pi];
+        for (var pi = 0; pi < allPolys.length; pi++) {
+            var P = allPolys[pi];
+            var bx0 = P.x0 - px > 0 ? P.x0 - px : (px - P.x1 > 0 ? px - P.x1 : 0);
+            var by0 = P.y0 - py > 0 ? P.y0 - py : (py - P.y1 > 0 ? py - P.y1 : 0);
+            if (bx0 * bx0 + by0 * by0 >= best) continue;
+            var poly = P.pts;
             for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
                 var ax = poly[j][0], ay = poly[j][1];
                 var bx = poly[i][0] - ax, by = poly[i][1] - ay;
@@ -366,7 +471,7 @@ Novedades v3:
     // Deepest point inside the shape (approx.) — used to scale the edge fade.
     var maxInner = 0;
     (function () {
-        var n = 28;
+        var n = Math.min(90, 28 + shapes.length * 4); // finer for text (thin strokes)
         for (var iy = 0; iy <= n; iy++) {
             for (var ix = 0; ix <= n; ix++) {
                 var x = left + width * ix / n, y = bottom + height * iy / n;
@@ -383,12 +488,19 @@ Novedades v3:
     // ------------------------------------------------------------------
     // Source visibility (so you can see only the dots)
     // ------------------------------------------------------------------
-    var sourceWasHidden = false;
-    try { sourceWasHidden = source.hidden; } catch (e) {}
-    function setSourceVisible(v) {
-        try { source.hidden = !v; } catch (e) {}
+    var sourceWasHidden = [];
+    for (var vI = 0; vI < sources.length; vI++) {
+        var wh = false;
+        try { wh = sources[vI].hidden; } catch (e) {}
+        sourceWasHidden.push(wh);
     }
-    function restoreSource() { setSourceVisible(!sourceWasHidden); }
+    // v === null restores each item's original state.
+    function setSourceVisible(v) {
+        for (var i = 0; i < sources.length; i++) {
+            try { sources[i].hidden = (v === null) ? sourceWasHidden[i] : !v; } catch (e) {}
+        }
+    }
+    function restoreSource() { setSourceVisible(null); }
 
     // ------------------------------------------------------------------
     // Artwork
@@ -408,7 +520,7 @@ Novedades v3:
     }
 
     function makeArtwork(groupName, s, maxDots) {
-        var outer = source.layer.groupItems.add();
+        var outer = sources[0].layer.groupItems.add();
         outer.name = groupName;
         var dots = outer.groupItems.add();
         dots.name = "Editable halftone dots";
@@ -731,7 +843,7 @@ Novedades v3:
             status.text = "Generando preview...";
             try { dlg.update(); } catch (e) {}
             removePreview();
-            setSourceVisible(cHidePreview.get() ? false : !sourceWasHidden);
+            if (cHidePreview.get()) setSourceVisible(false); else restoreSource();
             var result = makeArtwork("TEMP PREVIEW — Neural Current", s, 12000);
             previewGroup = result.group;
             status.text = "Preview: " + result.count + " puntos" +
@@ -790,4 +902,8 @@ Novedades v3:
     };
 
     dlg.show();
+
+    // Remove the temporary outlines made from live text (the original text is untouched).
+    cleanupTemp();
+    try { app.redraw(); } catch (e) {}
 })();
