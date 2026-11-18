@@ -7,12 +7,12 @@
     var COMP_NAME   = "Comp 1_REVEAL"; // null = composicion activa
     var LAYER_NAME  = "Capa 1";
     var DRAW_START  = 0.3;   // s: empieza a escribirse
-    var DRAW_TIME   = 1.6;   // s: lo que tarda cada contorno en escribirse
-    var STAGGER     = 0.12;  // s: retraso entre contornos (cascada)
-    var TARGET_END  = 55;    // % del contorno que recorre la escritura (el contorno es cerrado: ~50% ya cubre el trazo)
+    var DRAW_TIME   = 2.0;   // s: lo que tarda cada contorno en escribirse
+    var STAGGER     = 0.10;  // s: retraso entre contornos (cascada)
+    var TARGET_END  = 100;   // % del contorno que recorre la escritura
     var MATTE_W     = 80;    // px: grosor de la mascara (debe cubrir el ancho del trazo del logo)
-    var SPARK_W     = 9;     // px: grosor de la chispa
-    var SPARK_LEN   = 3;     // % del contorno que mide la chispa
+    var SPARK_W     = 11;    // px: grosor de la chispa
+    var TRAIL       = 0.16;  // s: cuanto se retrasa la cola de la chispa respecto a su cabeza (largo de la estela)
     var SPARK_COLOR = [1, 0.93, 0.80]; // blanco calido
     var GLOW_RADIUS = 70;    // brillo de la chispa
     var GLOW_INT    = 3.2;
@@ -72,13 +72,11 @@
             e.setValueAtTime(t1, TARGET_END);
             ease(e);
             if (isSpark) {
-                // la chispa nace como punto, crece hasta SPARK_LEN y al llegar se apaga dentro de su cabeza
+                // estela: el inicio del tramo sigue a la cabeza con un retraso fijo (TRAIL); al llegar se apaga en su cabeza
                 var s = trim.property("ADBE Vector Trim Start");
-                s.setValueAtTime(t0, 0);
-                s.setValueAtTime(t1, TARGET_END - SPARK_LEN);
-                s.setValueAtTime(t1 + 0.25, TARGET_END);
+                s.setValueAtTime(t0 + TRAIL, 0);
+                s.setValueAtTime(t1 + TRAIL, TARGET_END);
                 ease(s);
-                s.setTemporalEaseAtKey(3, [new KeyframeEase(0, 60)], [new KeyframeEase(0, 0.1)]);
             }
         }
         return units.length;
@@ -105,7 +103,7 @@
         spark.name = SPARK_NAME;
         spark = comp.layer(SPARK_NAME);
         nUnits = toTrace(spark, SPARK_COLOR, SPARK_W, 1, true); // cap plano: sin punto a longitud cero
-        var tEnd = DRAW_START + (nUnits - 1) * STAGGER + DRAW_TIME + 0.3; // despues del ultimo contorno
+        var tEnd = DRAW_START + (nUnits - 1) * STAGGER + DRAW_TIME + TRAIL + 0.1; // despues del ultimo contorno
         var op = spark.property("ADBE Transform Group").property("ADBE Opacity");
         op.setValueAtTime(0, 0);
         op.setValueAtTime(DRAW_START, 0);
