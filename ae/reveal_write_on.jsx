@@ -14,8 +14,8 @@
     var SPARK_W     = 11;    // px: grosor de la chispa
     var TRAIL       = 0.16;  // s: cuanto se retrasa la cola de la chispa respecto a su cabeza (largo de la estela)
     var SPARK_COLOR = [1, 0.93, 0.80]; // blanco calido
-    var GLOW_RADIUS = 70;    // brillo de la chispa
-    var GLOW_INT    = 3.2;
+    var GLOW_RADIUS = 90;    // brillo de la chispa
+    var GLOW_INT    = 5;
     var EASE_OUT    = 45;    // influencia al arrancar
     var EASE_IN     = 70;    // influencia al frenar
     // -----------------------------
@@ -113,7 +113,7 @@
         spark.blendingMode = BlendingMode.ADD;
         try { // brillo (Glow) de la chispa; si falla, se puede anadir a mano
             var gl = spark.property("ADBE Effect Parade").addProperty("ADBE Glo2");
-            gl.property("ADBE Glo2-0002").setValue(20);          // Threshold
+            gl.property("ADBE Glo2-0002").setValue(10);          // Threshold
             gl.property("ADBE Glo2-0003").setValue(GLOW_RADIUS); // Radius
             gl.property("ADBE Glo2-0004").setValue(GLOW_INT);    // Intensity
         } catch (eg) {}
