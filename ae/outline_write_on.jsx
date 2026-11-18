@@ -7,8 +7,8 @@
     var COMP_NAME   = "Comp 1_LINE"; // null = composicion activa
     var LAYER_NAME  = "Capa 1";
     var DRAW_START  = 0.3;   // s: empieza a dibujarse el trazado
-    var DRAW_TIME   = 2.0;   // s: lo que tarda cada contorno en dibujarse
-    var STAGGER     = 0.10;  // s: retraso entre contornos (cascada)
+    var DRAW_TIME   = 2.6;   // s: lo que tarda en dibujarse TODO el trazado
+    var SEQUENTIAL  = true;  // true: los contornos se dibujan uno tras otro; false: todos a la vez
     var LINE_W      = 3;     // px: grosor de la linea fina del trazado
     var LINE_COLOR  = [1, 0.97, 0.92];
     var SPARK_W     = 9;     // px: grosor de la chispa
@@ -23,7 +23,7 @@
     // -----------------------------
 
     var PATHS = { "ADBE Vector Shape - Group": 1, "ADBE Vector Shape - Rect": 1, "ADBE Vector Shape - Ellipse": 1, "ADBE Vector Shape - Star": 1 };
-    var STRIP = { "ADBE Vector Graphic - Fill": 1, "ADBE Vector Graphic - Stroke": 1, "ADBE Vector Graphic - G-Fill": 1, "ADBE Vector Graphic - G-Stroke": 1, "ADBE Vector Filter - Trim": 1 };
+    var STRIP = { "ADBE Vector Filter - Merge": 1, "ADBE Vector Graphic - Fill": 1, "ADBE Vector Graphic - Stroke": 1, "ADBE Vector Graphic - G-Fill": 1, "ADBE Vector Graphic - G-Stroke": 1, "ADBE Vector Filter - Trim": 1 };
     var OUTLINE_NAME = "OUTLINE", SPARK_NAME = "SPARK", OLD_MATTE = "REVEAL MATTE";
 
     function findComp(name) {
@@ -34,18 +34,31 @@
         }
         return null;
     }
-    function collectUnits(vecs, out) {
-        var hasPath = false;
+    function directPaths(v) {
+        for (var i = 1; i <= v.numProperties; i++) if (PATHS[v.property(i).matchName]) return true;
+        return false;
+    }
+    // Contenedor donde van el trazo y el trim: el que tiene formas propias o cuyos subgrupos las tienen
+    // (en tu logo: el grupo exterior con los 5 contornos). Los operadores del padre afectan a los subgrupos.
+    function collectTargets(vecs, out) {
+        var kids = [], kidsWithPaths = false;
         for (var i = 1; i <= vecs.numProperties; i++) {
             var p = vecs.property(i);
-            if (PATHS[p.matchName]) hasPath = true;
-            else if (p.matchName === "ADBE Vector Group") collectUnits(p.property("ADBE Vectors Group"), out);
+            if (p.matchName === "ADBE Vector Group") {
+                var c = p.property("ADBE Vectors Group");
+                kids.push(c);
+                if (directPaths(c)) kidsWithPaths = true;
+            }
         }
-        if (hasPath) out.push(vecs);
+        if (directPaths(vecs) || kidsWithPaths) { out.push(vecs); return; }
+        for (var k = 0; k < kids.length; k++) collectTargets(kids[k], out);
     }
-    function lastPathIndex(vecs) {
+    function lastShapeIndex(vecs) {
         var idx = 0;
-        for (var i = 1; i <= vecs.numProperties; i++) if (PATHS[vecs.property(i).matchName]) idx = i;
+        for (var i = 1; i <= vecs.numProperties; i++) {
+            var m = vecs.property(i).matchName;
+            if (PATHS[m] || m === "ADBE Vector Group") idx = i;
+        }
         return idx;
     }
     function ease(prop, outInf, inInf) {
@@ -63,20 +76,22 @@
     }
     // Deja cada contenedor solo con sus formas + un trazo propio + trim animado
     function toTrace(lyr, color, width, cap, isSpark) {
-        stripAll(lyr.property("ADBE Root Vectors Group"));
-        var units = [];
-        collectUnits(lyr.property("ADBE Root Vectors Group"), units);
-        for (var u = 0; u < units.length; u++) {
-            var vecs = units[u];
+        var root = lyr.property("ADBE Root Vectors Group");
+        stripAll(root);
+        var targets = [];
+        collectTargets(root, targets);
+        for (var u = 0; u < targets.length; u++) {
+            var vecs = targets[u];
             var st = vecs.addProperty("ADBE Vector Graphic - Stroke");
             st.property("ADBE Vector Stroke Color").setValue(color);
             st.property("ADBE Vector Stroke Width").setValue(width);
             st.property("ADBE Vector Stroke Line Cap").setValue(cap);
             st.property("ADBE Vector Stroke Line Join").setValue(2);
             var trim = vecs.addProperty("ADBE Vector Filter - Trim");
-            trim.moveTo(lastPathIndex(vecs) + 1);
+            trim.moveTo(lastShapeIndex(vecs) + 1); // debajo de las formas, encima del trazo
             trim = vecs.property("ADBE Vector Filter - Trim"); // moveTo invalida la referencia
-            var t0 = DRAW_START + u * STAGGER, t1 = t0 + DRAW_TIME;
+            try { trim.property("ADBE Vector Trim Type").setValue(SEQUENTIAL ? 2 : 1); } catch (et) {}
+            var t0 = DRAW_START, t1 = t0 + DRAW_TIME;
             var e = trim.property("ADBE Vector Trim End");
             e.setValueAtTime(t0, 0);
             e.setValueAtTime(t1, 100);
@@ -89,7 +104,7 @@
                 ease(s, EASE_OUT, EASE_IN);
             }
         }
-        return units.length;
+        return targets.length;
     }
 
     var comp = findComp(COMP_NAME);
@@ -116,7 +131,7 @@
         spark.name = SPARK_NAME;
         spark = comp.layer(SPARK_NAME);
         nUnits = toTrace(spark, SPARK_COLOR, SPARK_W, 1, true); // cap plano: sin punto a longitud cero
-        var tDrawEnd = DRAW_START + (nUnits - 1) * STAGGER + DRAW_TIME; // termina el ultimo contorno
+        var tDrawEnd = DRAW_START + DRAW_TIME; // termina el ultimo contorno
         var sop = spark.property("ADBE Transform Group").property("ADBE Opacity");
         sop.setValueAtTime(0, 0);
         sop.setValueAtTime(DRAW_START, 0);
@@ -158,5 +173,5 @@
     } finally {
         app.endUndoGroup();
     }
-    alert("Listo en '" + comp.name + "' (AE " + aeVer + ").\nContornos con formas: " + nUnits + "\nCapas nuevas: " + SPARK_NAME + " y " + OUTLINE_NAME);
+    alert("Listo en '" + comp.name + "' (AE " + aeVer + ").\nGrupos de trazado: " + nUnits + "\nCapas nuevas: " + SPARK_NAME + " y " + OUTLINE_NAME);
 })();
