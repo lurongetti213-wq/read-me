@@ -7,10 +7,12 @@
     var COMP_NAME   = "Comp 1_REVEAL"; // null = composicion activa
     var LAYER_NAME  = "Capa 1";
     var DRAW_START  = 0.3;   // s: empieza a escribirse
-    var DRAW_TIME   = 2.0;   // s: duracion de la escritura
+    var DRAW_TIME   = 1.6;   // s: lo que tarda cada contorno en escribirse
+    var STAGGER     = 0.12;  // s: retraso entre contornos (cascada)
+    var TARGET_END  = 55;    // % del contorno que recorre la escritura (el contorno es cerrado: ~50% ya cubre el trazo)
     var MATTE_W     = 80;    // px: grosor de la mascara (debe cubrir el ancho del trazo del logo)
-    var SPARK_W     = 5;     // px: grosor de la chispa
-    var SPARK_LEN   = 4;     // % del contorno que mide la chispa
+    var SPARK_W     = 9;     // px: grosor de la chispa
+    var SPARK_LEN   = 3;     // % del contorno que mide la chispa
     var SPARK_COLOR = [1, 0.93, 0.80]; // blanco calido
     var EASE_OUT    = 45;    // influencia al arrancar
     var EASE_IN     = 70;    // influencia al frenar
@@ -48,7 +50,7 @@
         prop.setTemporalEaseAtKey(2, [new KeyframeEase(0, EASE_IN)], [lo]);
     }
     // Deja cada contenedor solo con sus formas + un trazo propio + trim animado
-    function toTrace(lyr, color, width, cap, startEnd) {
+    function toTrace(lyr, color, width, cap, isSpark) {
         var units = [];
         collectUnits(lyr.property("ADBE Root Vectors Group"), units);
         for (var u = 0; u < units.length; u++) {
@@ -62,16 +64,19 @@
             var trim = vecs.addProperty("ADBE Vector Filter - Trim");
             trim.moveTo(lastPathIndex(vecs) + 1);
             trim = vecs.property("ADBE Vector Filter - Trim"); // moveTo invalida la referencia
-            var tEnd = DRAW_START + DRAW_TIME;
+            var t0 = DRAW_START + u * STAGGER, t1 = t0 + DRAW_TIME;
             var e = trim.property("ADBE Vector Trim End");
-            e.setValueAtTime(DRAW_START, 0);
-            e.setValueAtTime(tEnd, 100);
+            e.setValueAtTime(t0, 0);
+            e.setValueAtTime(t1, TARGET_END);
             ease(e);
-            if (startEnd !== null) {
+            if (isSpark) {
+                // la chispa nace como punto, crece hasta SPARK_LEN y al llegar se apaga dentro de su cabeza
                 var s = trim.property("ADBE Vector Trim Start");
-                s.setValueAtTime(DRAW_START, 0);
-                s.setValueAtTime(tEnd, startEnd);
+                s.setValueAtTime(t0, 0);
+                s.setValueAtTime(t1, TARGET_END - SPARK_LEN);
+                s.setValueAtTime(t1 + 0.25, TARGET_END);
                 ease(s);
+                s.setTemporalEaseAtKey(3, [new KeyframeEase(0, 60)], [new KeyframeEase(0, 0.1)]);
             }
         }
         return units.length;
@@ -93,13 +98,12 @@
         layer = comp.layer(LAYER_NAME);
         try { layer.trackMatteType = TrackMatteType.NO_TRACK_MATTE; } catch (e0) {}
 
-        var tEnd = DRAW_START + DRAW_TIME;
-
         // 1) capa de chispa (duplicado del original)
         var spark = layer.duplicate();
         spark.name = SPARK_NAME;
         spark = comp.layer(SPARK_NAME);
-        nUnits = toTrace(spark, SPARK_COLOR, SPARK_W, 1, 100 - SPARK_LEN); // cap plano: sin punto a longitud cero
+        nUnits = toTrace(spark, SPARK_COLOR, SPARK_W, 1, true); // cap plano: sin punto a longitud cero
+        var tEnd = DRAW_START + (nUnits - 1) * STAGGER + DRAW_TIME + 0.3; // despues del ultimo contorno
         var op = spark.property("ADBE Transform Group").property("ADBE Opacity");
         op.setValueAtTime(0, 0);
         op.setValueAtTime(DRAW_START, 0);
@@ -113,7 +117,7 @@
         var matte = layer.duplicate();
         matte.name = MATTE_NAME;
         matte = comp.layer(MATTE_NAME);
-        toTrace(matte, [1, 1, 1], MATTE_W, 1, null);
+        toTrace(matte, [1, 1, 1], MATTE_W, 1, false);
 
         // 3) orden: SPARK arriba, luego MATTE, luego la capa original; la mascara revela la original
         layer = comp.layer(LAYER_NAME);
