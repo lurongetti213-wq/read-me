@@ -54,7 +54,7 @@
     function addTrim(vecs) {
         var trim = vecs.addProperty("ADBE Vector Filter - Trim");
         trim.moveTo(lastPathIndex(vecs) + 1); // justo debajo de las formas, antes del trazo/relleno
-        return trim;
+        return vecs.property("ADBE Vector Filter - Trim"); // moveTo invalida la referencia: se vuelve a buscar
     }
     function ease(prop, outInf, inInf, n) {
         var lo = new KeyframeEase(0, 0.1);
@@ -98,6 +98,7 @@
                 created = true;
             }
             var trim = addTrim(vecs);
+            fill = vecs.property("ADBE Vector Graphic - Fill"); // el indice cambio al mover el trim
             var e = trim.property("ADBE Vector Trim End");
             e.setValueAtTime(DRAW_START, 0);
             e.setValueAtTime(tEnd, 100);
@@ -116,6 +117,7 @@
         var spark = layer.duplicate();
         spark.name = sparkName;
         spark.moveBefore(layer);
+        spark = comp.layer(sparkName); // referencia fresca tras mover la capa
         var sroot = spark.property("ADBE Root Vectors Group");
         var sunits = [];
         collectUnits(sroot, sunits);
