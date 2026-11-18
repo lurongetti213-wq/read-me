@@ -143,6 +143,7 @@
 
         // 4) orden: SPARK arriba, luego OUTLINE, luego el logo original
         layer = comp.layer(LAYER_NAME);
+        line = comp.layer(OUTLINE_NAME);
         line.moveBefore(layer);
         spark = comp.layer(SPARK_NAME);
         spark.moveToBeginning();
