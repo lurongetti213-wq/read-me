@@ -53,13 +53,21 @@
         prop.setTemporalEaseAtKey(1, [lo], [new KeyframeEase(0, outInf)]);
         prop.setTemporalEaseAtKey(2, [new KeyframeEase(0, inInf)], [lo]);
     }
+    // Quita rellenos, trazos y trims en TODOS los niveles (raiz, grupos y subgrupos)
+    function stripAll(vecs) {
+        for (var i = vecs.numProperties; i >= 1; i--) {
+            var p = vecs.property(i);
+            if (STRIP[p.matchName]) p.remove();
+            else if (p.matchName === "ADBE Vector Group") stripAll(p.property("ADBE Vectors Group"));
+        }
+    }
     // Deja cada contenedor solo con sus formas + un trazo propio + trim animado
     function toTrace(lyr, color, width, cap, isSpark) {
+        stripAll(lyr.property("ADBE Root Vectors Group"));
         var units = [];
         collectUnits(lyr.property("ADBE Root Vectors Group"), units);
         for (var u = 0; u < units.length; u++) {
             var vecs = units[u];
-            for (var i = vecs.numProperties; i >= 1; i--) if (STRIP[vecs.property(i).matchName]) vecs.property(i).remove();
             var st = vecs.addProperty("ADBE Vector Graphic - Stroke");
             st.property("ADBE Vector Stroke Color").setValue(color);
             st.property("ADBE Vector Stroke Width").setValue(width);
