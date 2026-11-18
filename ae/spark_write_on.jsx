@@ -132,8 +132,12 @@
             sst.property("ADBE Vector Stroke Line Cap").setValue(1); // plano: no deja punto con longitud cero
             var st = sv.property("ADBE Vector Filter - Trim");
             if (st) {
-                st.property("ADBE Vector Trim Start").expression =
-                    'Math.max(0, thisProperty.propertyGroup(1).property("ADBE Vector Trim End") - ' + SPARK_LEN + ');';
+                // La chispa nace como punto y crece hasta SPARK_LEN % mientras avanza (mismas curvas que el trazo)
+                var ss = st.property("ADBE Vector Trim Start");
+                while (ss.numKeys > 0) ss.removeKey(1);
+                ss.setValueAtTime(DRAW_START, 0);
+                ss.setValueAtTime(tEnd, 100 - SPARK_LEN);
+                ease(ss, EASE_OUT, EASE_IN);
             }
         }
         var op = spark.property("ADBE Transform Group").property("ADBE Opacity");
